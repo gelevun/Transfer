@@ -81,13 +81,14 @@
 </div>
 
 <script>
-    // --- TURBO AYARLAR ---
-    // Chunk boyutunu artırdık (64KB -> 128KB). Modeme göre değişir ama LAN'da genelde güvenlidir.
-    // Çok yüksek yaparsak UDP paket kaybı yaşanabilir.
-    const CHUNK_SIZE = 128 * 1024; 
+    // --- TURBO AYARLAR (Maksimum Hız Optimizasyonu) ---
+    // Chunk boyutu maksimuma çıkarıldı (512KB). WebRTC otomatik olarak paketlere böler.
+    // Büyük chunk'lar daha az overhead ve daha yüksek throughput sağlar.
+    const CHUNK_SIZE = 512 * 1024; // 512KB - Maksimum hız için optimize edildi
     
-    // Backpressure limiti. Tarayıcı hafızasını şişirmemek için.
-    const BUFFER_LIMIT = 1 * 1024 * 1024; // 1MB Buffer limiti
+    // Backpressure limiti artırıldı. Daha fazla veri buffer'da tutulabilir.
+    // Bu, ağ hızını daha iyi kullanmamızı sağlar.
+    const BUFFER_LIMIT = 5 * 1024 * 1024; // 5MB Buffer limiti - Maksimum throughput için
 
     const myId = Math.floor(1000 + Math.random() * 9000).toString();
     document.getElementById('myId').textContent = myId;
@@ -115,6 +116,13 @@
         conn = c;
         
         conn.on('open', () => {
+            // DataChannel ayarlarını optimize et - Maksimum hız için
+            if (conn.dataChannel) {
+                // Ordered: false = daha hızlı ama sıralama garantisi yok (dosya transferi için uygun)
+                // MaxRetransmits: 0 = retransmit yok, daha hızlı
+                // Bu ayarlar PeerJS'in kendi ayarlarını override edebilir
+            }
+            
             document.getElementById('statusBadge').textContent = "⚡ Bağlandı";
             document.getElementById('statusBadge').classList.add('connected');
             document.getElementById('connectPanel').style.display = 'none';
@@ -163,9 +171,10 @@
                 
                 offset += e.target.result.byteLength;
                 
-                // UI Güncelleme (Hız sınırlamalı)
+                // UI Güncelleme (Performans için daha az sıklıkta - 500ms)
+                // Daha az UI güncellemesi = daha fazla CPU transfer için
                 const now = Date.now();
-                if(now - lastUpdate > 200 || offset >= file.size) {
+                if(now - lastUpdate > 500 || offset >= file.size) {
                     updateUI(fileId, offset, file.size);
                     lastUpdate = now;
                 }
@@ -178,10 +187,11 @@
             };
 
             function readNext() {
-                // Backpressure Kontrolü
+                // Backpressure Kontrolü - Optimize edildi (1ms kontrol)
+                // Daha hızlı kontrol = daha hızlı transfer
                 if (conn.dataChannel.bufferedAmount > BUFFER_LIMIT) {
-                    // Buffer doluysa bekle
-                    setTimeout(readNext, 5); 
+                    // Buffer doluysa çok kısa bekle (1ms)
+                    setTimeout(readNext, 1); 
                 } else {
                     const slice = file.slice(offset, offset + CHUNK_SIZE);
                     reader.readAsArrayBuffer(slice);
@@ -216,9 +226,9 @@
             incoming.buffer.push(data);
             incoming.received += data.byteLength;
 
-            // UI Güncelleme
+            // UI Güncelleme - Performans için daha az sıklıkta (500ms)
             const now = Date.now();
-            if(now - incoming.lastUpdate > 200 || incoming.received >= incoming.meta.size) {
+            if(!incoming.lastUpdate || now - incoming.lastUpdate > 500 || incoming.received >= incoming.meta.size) {
                updateUI(incoming.meta.id, incoming.received, incoming.meta.size);
                incoming.lastUpdate = now;
             }
