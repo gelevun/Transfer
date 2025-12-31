@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Turbo Transfer (Raw Binary)</title>
+    
+    <link rel="manifest" href='data:application/manifest+json,{"name":"Turbo Transfer","short_name":"Turbo","start_url":".","display":"standalone","background_color":"#000000","theme_color":"#ff3b30","icons":[{"src":"https://cdn-icons-png.flaticon.com/512/888/888857.png","sizes":"192x192","type":"image/png"}]}'>
+    <meta name="theme-color" content="#000000">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+
+    <!-- PeerJS -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+
+    <style>
+        :root { --bg: #000; --card: #1c1c1e; --text: #fff; --blue: #0A84FF; --green: #30D158; --red: #FF453A; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        
+        .card { width: 100%; max-width: 480px; background: var(--card); border-radius: 18px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        
+        h1 { text-align: center; font-size: 1.5rem; margin: 0 0 20px 0; letter-spacing: -0.5px; }
+        
+        .status-badge { background: #333; color: #888; padding: 8px 16px; border-radius: 20px; font-size: 0.85rem; display: inline-block; margin-bottom: 20px; font-weight: 600; }
+        .connected { background: rgba(48, 209, 88, 0.2); color: var(--green); }
+        
+        .code-box { background: #2c2c2e; border-radius: 12px; padding: 15px; text-align: center; margin-bottom: 20px; cursor: pointer; transition: transform 0.1s; }
+        .code-box:active { transform: scale(0.98); }
+        .my-code { font-size: 2.5rem; font-weight: 800; letter-spacing: 5px; color: var(--blue); font-family: monospace; }
+        
+        .input-row { display: flex; gap: 10px; margin-bottom: 20px; }
+        input { flex: 1; background: #2c2c2e; border: none; padding: 15px; border-radius: 12px; color: #fff; font-size: 1.1rem; text-align: center; outline: none; }
+        input:focus { box-shadow: 0 0 0 2px var(--blue); }
+        
+        .btn { border: none; padding: 15px 25px; border-radius: 12px; font-weight: 700; cursor: pointer; font-size: 1rem; transition: opacity 0.2s; }
+        .btn-primary { background: var(--blue); color: white; }
+        .btn-select { background: #3a3a3c; color: white; width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; }
+        .btn:active { opacity: 0.7; }
+        
+        .file-list { margin-top: 25px; list-style: none; padding: 0; }
+        .file-item { background: #2c2c2e; padding: 15px; border-radius: 12px; margin-bottom: 10px; }
+        .file-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .file-name { font-weight: 500; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 70%; }
+        .file-status { font-size: 0.8rem; color: #888; }
+        
+        .progress-track { height: 6px; background: #444; border-radius: 3px; overflow: hidden; }
+        .progress-bar { height: 100%; background: var(--blue); width: 0%; transition: width 0.1s linear; }
+        
+        /* Drag Drop Overlay */
+        .drop-zone { border: 2px dashed #444; border-radius: 12px; padding: 20px; text-align: center; display: none; margin-top: 10px; }
+        .drop-zone.active { border-color: var(--blue); background: rgba(10, 132, 255, 0.1); }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <div style="text-align: center;">
+        <span id="statusBadge" class="status-badge">Bağlantı Bekleniyor...</span>
+    </div>
+
+    <h1>Turbo Transfer ⚡</h1>
+
+    <div class="code-box" onclick="copyCode()">
+        <div style="font-size: 0.8rem; color: #888; margin-bottom: 5px;">CİHAZ KODUNUZ</div>
+        <div id="myId" class="my-code">...</div>
+    </div>
+
+    <div id="connectPanel" class="input-row">
+        <input type="tel" id="remoteId" placeholder="Karşı kodu gir" maxlength="4">
+        <button class="btn btn-primary" onclick="connect()">BAĞLAN</button>
+    </div>
+
+    <div id="sendPanel" style="display: none;">
+        <div class="drop-zone" id="dropZone">Dosyayı Buraya Bırakın</div>
+        <button class="btn btn-select" onclick="document.getElementById('fileIn').click()">
+            <span>📄</span> Dosya Seç
+        </button>
+        <input type="file" id="fileIn" style="display: none;" multiple onchange="processFiles(this.files)">
+    </div>
+
+    <ul id="fileList" class="file-list"></ul>
+</div>
+
+<script>
+    // --- TURBO AYARLAR ---
+    // Chunk boyutunu artırdık (64KB -> 128KB). Modeme göre değişir ama LAN'da genelde güvenlidir.
+    // Çok yüksek yaparsak UDP paket kaybı yaşanabilir.
+    const CHUNK_SIZE = 128 * 1024; 
+    
+    // Backpressure limiti. Tarayıcı hafızasını şişirmemek için.
+    const BUFFER_LIMIT = 1 * 1024 * 1024; // 1MB Buffer limiti
+
+    const myId = Math.floor(1000 + Math.random() * 9000).toString();
+    document.getElementById('myId').textContent = myId;
+
+    let peer = new Peer(myId, { debug: 0 }); // Debug kapalı performans için
+    let conn = null;
+
+    // --- BAĞLANTI ---
+    peer.on('open', () => {
+        document.getElementById('statusBadge').textContent = "Hazır - Bekleniyor";
+    });
+
+    peer.on('connection', (c) => {
+        handleConnection(c);
+    });
+
+    function connect() {
+        const id = document.getElementById('remoteId').value;
+        if(!id) return;
+        const c = peer.connect(id, { reliable: true }); // TCP benzeri güvenli aktarım
+        handleConnection(c);
+    }
+
+    function handleConnection(c) {
+        conn = c;
+        
+        conn.on('open', () => {
+            document.getElementById('statusBadge').textContent = "⚡ Bağlandı";
+            document.getElementById('statusBadge').classList.add('connected');
+            document.getElementById('connectPanel').style.display = 'none';
+            document.getElementById('sendPanel').style.display = 'block';
+            document.getElementById('dropZone').style.display = 'block';
+        });
+
+        conn.on('data', (data) => handleData(data));
+        
+        conn.on('close', () => {
+            alert("Bağlantı Koptu");
+            location.reload();
+        });
+
+        conn.on('error', (err) => console.error(err));
+    }
+
+    // --- GÖNDERME MOTORU (RAW BINARY) ---
+    async function processFiles(files) {
+        if(!conn) return;
+        for(let f of files) await sendFile(f);
+    }
+
+    function sendFile(file) {
+        return new Promise((resolve) => {
+            const fileId = Date.now().toString();
+            // 1. Önce Meta veriyi JSON olarak gönder
+            conn.send(JSON.stringify({
+                type: 'meta',
+                name: file.name,
+                size: file.size,
+                mime: file.type,
+                id: fileId
+            }));
+
+            addFileUI(fileId, file.name, true);
+
+            const reader = new FileReader();
+            let offset = 0;
+            let lastUpdate = Date.now();
+
+            reader.onload = (e) => {
+                // 2. Veriyi HAM (Raw) ArrayBuffer olarak gönder
+                // Bu kısımda JSON.stringify YOK. Doğrudan belleği ağa döküyoruz.
+                conn.send(e.target.result);
+                
+                offset += e.target.result.byteLength;
+                
+                // UI Güncelleme (Hız sınırlamalı)
+                const now = Date.now();
+                if(now - lastUpdate > 200 || offset >= file.size) {
+                    updateUI(fileId, offset, file.size);
+                    lastUpdate = now;
+                }
+
+                if(offset < file.size) {
+                    readNext();
+                } else {
+                    resolve();
+                }
+            };
+
+            function readNext() {
+                // Backpressure Kontrolü
+                if (conn.dataChannel.bufferedAmount > BUFFER_LIMIT) {
+                    // Buffer doluysa bekle
+                    setTimeout(readNext, 5); 
+                } else {
+                    const slice = file.slice(offset, offset + CHUNK_SIZE);
+                    reader.readAsArrayBuffer(slice);
+                }
+            }
+
+            readNext();
+        });
+    }
+
+    // --- ALMA MOTORU ---
+    let incoming = null; // Şu an gelen dosya
+
+    function handleData(data) {
+        // Eğer veri string ise META verisidir
+        if (typeof data === 'string') {
+            const meta = JSON.parse(data);
+            if(meta.type === 'meta') {
+                incoming = {
+                    meta: meta,
+                    received: 0,
+                    buffer: [], // Chunkları burada biriktireceğiz
+                    start: Date.now()
+                };
+                addFileUI(meta.id, meta.name, false);
+            }
+        } 
+        // Eğer veri ArrayBuffer ise DOSYA İÇERİĞİDİR (Binary)
+        else if (data instanceof ArrayBuffer) {
+            if(!incoming) return;
+
+            incoming.buffer.push(data);
+            incoming.received += data.byteLength;
+
+            // UI Güncelleme
+            const now = Date.now();
+            if(now - incoming.lastUpdate > 200 || incoming.received >= incoming.meta.size) {
+               updateUI(incoming.meta.id, incoming.received, incoming.meta.size);
+               incoming.lastUpdate = now;
+            }
+
+            // Bitiş kontrolü
+            if (incoming.received >= incoming.meta.size) {
+                saveFile(incoming);
+                incoming = null; // Sıfırla
+            }
+        }
+    }
+
+    function saveFile(inc) {
+        const blob = new Blob(inc.buffer, { type: inc.meta.mime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = inc.meta.name;
+        document.body.appendChild(a);
+        a.click();
+        
+        const el = document.getElementById('status-' + inc.meta.id);
+        el.textContent = "✅ Tamamlandı";
+        el.style.color = "var(--green)";
+        
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+
+    // --- ARAYÜZ ---
+    function addFileUI(id, name, isSender) {
+        const li = document.createElement('li');
+        li.className = 'file-item';
+        li.id = 'file-' + id;
+        li.innerHTML = `
+            <div class="file-header">
+                <div class="file-name">${isSender ? '⬆' : '⬇'} ${name}</div>
+                <div class="file-status" id="status-${id}">0%</div>
+            </div>
+            <div class="progress-track">
+                <div class="progress-bar" style="width: 0%"></div>
+            </div>
+        `;
+        document.getElementById('fileList').prepend(li);
+    }
+
+    function updateUI(id, current, total) {
+        const percent = Math.floor((current / total) * 100);
+        const el = document.getElementById('file-' + id);
+        if(el) {
+            el.querySelector('.progress-bar').style.width = percent + '%';
+            document.getElementById('status-' + id).textContent = percent + '%';
+        }
+    }
+
+    function copyCode() {
+        navigator.clipboard.writeText(myId);
+        const el = document.getElementById('myId');
+        const old = el.style.color;
+        el.style.color = "#30D158";
+        setTimeout(() => el.style.color = old, 500);
+    }
+    
+    // Drag & Drop
+    const dz = document.getElementById('dropZone');
+    window.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('active'); });
+    window.addEventListener('dragleave', e => { dz.classList.remove('active'); });
+    window.addEventListener('drop', e => {
+        e.preventDefault();
+        dz.classList.remove('active');
+        if(conn && e.dataTransfer.files.length > 0) processFiles(e.dataTransfer.files);
+    });
+</script>
+
+</body>
+</html>
